@@ -51,7 +51,7 @@ async function run() {
     });
     // Logout
     app.post("/logout", async (req, res) => { 
-      const user = req.body;
+      const user = req.body; 
       // console.log("logging out", user);
       res
         .clearCookie("token", { ...cookieOptions, maxAge: 0 })
