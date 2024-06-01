@@ -50,7 +50,7 @@ async function run() {
       res.send({ token });
     });
     // Logout
-    app.post("/logout", async (req, res) => {
+    app.post("/logout", async (req, res) => { 
       const user = req.body;
       // console.log("logging out", user);
       res
