@@ -40,6 +40,7 @@ async function run() {
     const usersCollection = db.collection("users");
     const taskCollection = db.collection("tasks");
     const feedbackCollection = db.collection("feedback");
+    
 
     // auth related api
     app.post("/jwt", async (req, res) => {
@@ -107,7 +108,7 @@ async function run() {
 
     // add tasks in taskCollection
     app.post("/addTask", async (req, res) => {
-      
+
       try {
         const task = req.body;
         const result = await taskCollection.insertOne(task);
