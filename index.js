@@ -59,7 +59,7 @@ async function run() {
     });
 
     // save a user data in db
-    app.put('/users', async (req, res) => { 
+    app.put('/users', async (req, res) => {  
         const user = req.body
   
         const query = { email: user?.email }
