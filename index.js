@@ -107,6 +107,7 @@ async function run() {
 
     // add tasks in taskCollection
     app.post("/addTask", async (req, res) => {
+      
       try {
         const task = req.body;
         const result = await taskCollection.insertOne(task);
