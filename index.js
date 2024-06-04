@@ -11,7 +11,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:5174"],
+  origin: ["http://localhost:5173", "http://localhost:5174","https://mega-earning.netlify.app"],
   credentials: true,
   optionSuccessStatus: 200,
 };
@@ -19,24 +19,6 @@ app.use(cors(corsOptions));
 
 app.use(express.json());
 app.use(cookieParser());
-
-// For localstorage
-const verifyToken = (req, res, next) => {
-  console.log("inside verify token", req.headers.authorization);
-  if (!req.headers.authorization) {
-    return res.status(401).send({ message: "forbidden access" });
-  }
-  const token = req.headers.authorization.split(" ")[1];
-  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-    if (err) {
-      return res.status(401).send({ message: "unauthorized access" });
-    }
-    req.decoded = decoded;
-    next();
-  });
-
-  // next();
-};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.netgysa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -61,22 +43,74 @@ async function run() {
     const purchaseCoinCollection = db.collection("purchaseCoin");
     const paymentCollection = db.collection("payment");
     const submissionCollection = db.collection("workerSubmission");
-    const withdrawCollection = db.collection("withdraw"); 
+    const withdrawCollection = db.collection("withdraw");
+
+    // For localstorage
+    const verifyToken = (req, res, next) => {
+      console.log("inside verify token", req.headers.authorization);
+      if (!req.headers.authorization) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      const token = req.headers.authorization.split(" ")[1];
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: "unauthorized access" });
+        }
+        req.decoded = decoded;
+        next();
+      });
+
+      // next();
+    };
+
+    // use verify admin after verifyToken
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await usersCollection.findOne(query);
+      const isAdmin = user?.role === "Admin";
+      if (!isAdmin) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+    // use verify TaskCreator after verifyToken
+    const verifyTaskCreator = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await usersCollection.findOne(query);
+      const isAdmin = user?.role === "TaskCreator";
+      if (!isAdmin) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+    // use verify TaskCreator after verifyToken
+    const verifyWorker = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await usersCollection.findOne(query);
+      const isAdmin = user?.role === "Worker";
+      if (!isAdmin) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
 
     // get all withdraw
-    app.get("/withdraws", async (req, res) => {
+    app.get("/withdraws", verifyToken, verifyAdmin, async (req, res) => {
       const result = await withdrawCollection.find().toArray();
       res.send(result);
     });
 
     // post wihdraw data in db
-    app.post("/wihdraws", async (req, res) => {
+    app.post("/wihdraws", verifyToken, verifyWorker, async (req, res) => {
       const wihdrawInfo = req.body;
       const result = await withdrawCollection.insertOne(wihdrawInfo);
       res.send(result);
     });
 
-    app.delete("/withdraw/:id", async (req, res) => {
+    app.delete("/withdraw/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await withdrawCollection.deleteOne(query);
@@ -84,10 +118,15 @@ async function run() {
     });
 
     // purchaseCoinCollection
-    app.get("/purchasecoin", async (req, res) => {
-      const result = await purchaseCoinCollection.find().toArray();
-      res.send(result);
-    });
+    app.get(
+      "/purchasecoin",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const result = await purchaseCoinCollection.find().toArray();
+        res.send(result);
+      }
+    );
 
     // auth related api
     app.post("/jwt", async (req, res) => {
@@ -99,30 +138,43 @@ async function run() {
       res.send({ token });
     });
     // Logout
-    app.post("/logout", async (req, res) => {
-      const user = req.body;
-      res
-        .clearCookie("token", { ...cookieOptions, maxAge: 0 })
-        .send({ success: true });
+    app.get("/logout", async (req, res) => {
+      try {
+        res
+          .clearCookie("token", {
+            maxAge: 0,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+          })
+          .send({ success: true });
+        console.log("Logout successful");
+      } catch (err) {
+        res.status(500).send(err);
+      }
     });
 
     // create-payment-intent
-    app.post("/create-payment-intent", verifyToken, async (req, res) => {
-      const price = req.body.price;
-      const priceInCent = parseFloat(price) * 100;
-      if (!price || priceInCent < 1) return;
-      // generate clientSecret
-      const { client_secret } = await stripe.paymentIntents.create({
-        amount: priceInCent,
-        currency: "usd",
-        // In the latest version of the API, specifying the `automatic_payment_methods` parameter is optional because Stripe enables its functionality by default.
-        automatic_payment_methods: {
-          enabled: true,
-        },
-      });
-      // send client secret as response
-      res.send({ clientSecret: client_secret });
-    });
+    app.post(
+      "/create-payment-intent",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const price = req.body.price;
+        const priceInCent = parseFloat(price) * 100;
+        if (!price || priceInCent < 1) return;
+        // generate clientSecret
+        const { client_secret } = await stripe.paymentIntents.create({
+          amount: priceInCent,
+          currency: "usd",
+          // In the latest version of the API, specifying the `automatic_payment_methods` parameter is optional because Stripe enables its functionality by default.
+          automatic_payment_methods: {
+            enabled: true,
+          },
+        });
+        // send client secret as response
+        res.send({ clientSecret: client_secret });
+      }
+    );
 
     // get user feedback
     app.get("/feedback", async (req, res) => {
@@ -131,12 +183,12 @@ async function run() {
     });
 
     // get all user
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
     });
     // get a user
-    app.get("/users/:email", async (req, res) => {
+    app.get("/users/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       const query = { email: email };
       const result = await usersCollection.findOne(query);
@@ -176,7 +228,7 @@ async function run() {
     });
 
     // patch the user role
-    app.patch("/users/role/:id", async (req, res) => {
+    app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { role } = req.body; // Get the new role from the request body
       const filter = { _id: new ObjectId(id) };
@@ -190,7 +242,7 @@ async function run() {
     });
 
     //Decrease User Coin by patch
-    app.patch("/user/coin", async (req, res) => {
+    app.patch("/user/coin", verifyToken, async (req, res) => {
       const withdrawInfo = req.body;
       const useremail = withdrawInfo.worker_email;
       const updatecoins = parseFloat(withdrawInfo.withdraw_coin);
@@ -202,20 +254,25 @@ async function run() {
     });
 
     // delete user from db
-    app.delete("/delete/user/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await usersCollection.deleteOne(query);
-      res.send(result);
-    });
+    app.delete(
+      "/delete/user/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await usersCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
 
     // get tasks in taskCollection
-    app.get("/tasks", async (req, res) => {
+    app.get("/tasks", verifyToken, async (req, res) => {
       const result = await taskCollection.find().toArray();
       res.send(result);
     });
 
-    app.get("/tasklist/:id", async (req, res) => {
+    app.get("/tasklist/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await taskCollection.findOne(query);
@@ -223,7 +280,7 @@ async function run() {
     });
 
     // get tasks in taskCollection by email
-    app.get("/task/:email", async (req, res) => {
+    app.get("/task/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       const query = { "taskCreator.email": email };
       const result = await taskCollection.find(query).toArray();
@@ -231,7 +288,7 @@ async function run() {
     });
 
     // add tasks in taskCollection
-    app.post("/addTask", async (req, res) => {
+    app.post("/addTask", verifyToken, verifyTaskCreator, async (req, res) => {
       try {
         const task = req.body;
 
@@ -262,163 +319,210 @@ async function run() {
       }
     });
 
-    // delete task by id
-    app.delete("/delete/task/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = taskCollection.deleteOne(query);
-      res.send(result);
-    });
-
     // update task data
-    app.patch("/tasks/:id", async (req, res) => {
-      const id = req.params.id;
-      const taskData = req.body;
-      const filter = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          task_title: taskData.task_title,
-          task_detail: taskData.task_detail,
-          submission_info: taskData.submission_info,
-        },
-      };
-      const result = await taskCollection.updateOne(filter, updateDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/tasks/:id",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const id = req.params.id;
+        const taskData = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            task_title: taskData.task_title,
+            task_detail: taskData.task_detail,
+            submission_info: taskData.submission_info,
+          },
+        };
+        const result = await taskCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      }
+    );
 
-    // update submission data when approve
-    app.put("/submission/:id", async (req, res) => {
-      try {
+    // delete task by id (Admin)
+    app.delete(
+      "/delete/task/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
-        const submissionData = req.body;
+        const result = taskCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
 
-        const userEmail = submissionData.worker_email;
-        const payable_amount = parseFloat(submissionData.payable_amount);
+    // update submission data when approve
+    app.put(
+      "/submission/:id",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const query = { _id: new ObjectId(id) };
+          const submissionData = req.body;
+
+          const userEmail = submissionData.worker_email;
+          const payable_amount = parseFloat(submissionData.payable_amount);
+
+          // Update the user's coins
+          const updateResult = await usersCollection.updateOne(
+            { email: userEmail },
+            { $inc: { coins: payable_amount } }
+          );
+
+          // Exclude _id from submissionData
+          const { _id, ...updateFields } = submissionData;
+
+          const updateDoc = {
+            $set: updateFields,
+          };
+
+          // Update the submission collection
+          const result = await submissionCollection.updateOne(query, updateDoc);
+
+          res.send({ result, updateResult });
+        } catch (error) {
+          console.error("Error updating submission:", error);
+          res.status(500).send({ error: "Failed to update submission" });
+        }
+      }
+    );
+
+    // update submission data when rejected
+    app.put(
+      "/submissions/:id",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const query = { _id: new ObjectId(id) };
+          const submissionData = req.body;
+
+          // Exclude _id from submissionData
+          const { _id, ...updateFields } = submissionData;
+
+          const updateDoc = {
+            $set: updateFields,
+          };
+
+          // Update the submission collection
+          const result = await submissionCollection.updateOne(query, updateDoc);
+
+          res.send(result);
+        } catch (error) {
+          console.error("Error updating submission:", error);
+          res.status(500).send({ error: "Failed to update submission" });
+        }
+      }
+    );
+
+    // delete one task by id (taskcreator)
+    app.delete(
+      "/tasks/:id",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+
+        const task = await taskCollection.findOne(query);
+
+        const email = task.taskCreator.email;
+        const task_quantity = task.task_quantity;
+        const payable_amount = task.payable_amount;
+
+        // Delete the task from the taskCollection
+        const deleteResult = await taskCollection.deleteOne(query);
+
+        // Calculate the refund amount
+        const refundAmount = task_quantity * payable_amount;
 
         // Update the user's coins
         const updateResult = await usersCollection.updateOne(
-          { email: userEmail },
-          { $inc: { coins: payable_amount } }
+          { email: email },
+          { $inc: { coins: refundAmount } }
         );
 
-        // Exclude _id from submissionData
-        const { _id, ...updateFields } = submissionData;
-
-        const updateDoc = {
-          $set: updateFields,
-        };
-
-        // Update the submission collection
-        const result = await submissionCollection.updateOne(query, updateDoc);
-
-        res.send({ result, updateResult });
-      } catch (error) {
-        console.error("Error updating submission:", error);
-        res.status(500).send({ error: "Failed to update submission" });
+        res.send({ deleteResult, updateResult });
       }
-    });
-
-    // update submission data when rejected
-    app.put("/submissions/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-        const submissionData = req.body;
-
-        // Exclude _id from submissionData
-        const { _id, ...updateFields } = submissionData;
-
-        const updateDoc = {
-          $set: updateFields,
-        };
-
-        // Update the submission collection
-        const result = await submissionCollection.updateOne(query, updateDoc);
-
-        res.send(result);
-      } catch (error) {
-        console.error("Error updating submission:", error);
-        res.status(500).send({ error: "Failed to update submission" });
-      }
-    });
-
-    // delete one task by id
-    app.delete("/tasks/:id", verifyToken, async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-
-      const task = await taskCollection.findOne(query);
-
-      const email = task.taskCreator.email;
-      const task_quantity = task.task_quantity;
-      const payable_amount = task.payable_amount;
-
-      // Delete the task from the taskCollection
-      const deleteResult = await taskCollection.deleteOne(query);
-
-      // Calculate the refund amount
-      const refundAmount = task_quantity * payable_amount;
-
-      // Update the user's coins
-      const updateResult = await usersCollection.updateOne(
-        { email: email },
-        { $inc: { coins: refundAmount } }
-      );
-
-      res.send({ deleteResult, updateResult });
-    });
+    );
 
     // get all paymenthistory
-    app.get("/paymentdata", async (req, res) => {
+    app.get("/paymentdata", verifyToken, verifyAdmin, async (req, res) => {
       const result = await paymentCollection.find().toArray();
       res.send(result);
     });
 
     // get paymenthistory by email
-    app.get("/paymentdata/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { userEmail: email };
-      const result = await paymentCollection.find(query).toArray();
-      res.send(result);
-    });
+    app.get(
+      "/paymentdata/:email",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const email = req.params.email;
+        const query = { userEmail: email };
+        const result = await paymentCollection.find(query).toArray();
+        res.send(result);
+      }
+    );
 
     // save payment info in payment collection
-    app.post("/paymentdata", async (req, res) => {
-      const paymentInfo = req.body;
-      const useremail = paymentInfo.userEmail;
-      const updatecoins = parseFloat(paymentInfo.cart.coins);
-      const updateResult = await usersCollection.updateOne(
-        { email: useremail },
-        { $inc: { coins: updatecoins } }
-      );
+    app.post(
+      "/paymentdata",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const paymentInfo = req.body;
+        const useremail = paymentInfo.userEmail;
+        const updatecoins = parseFloat(paymentInfo.cart.coins);
+        const updateResult = await usersCollection.updateOne(
+          { email: useremail },
+          { $inc: { coins: updatecoins } }
+        );
 
-      const result = await paymentCollection.insertOne(paymentInfo);
-      res.send({ result, updateResult });
-    });
+        const result = await paymentCollection.insertOne(paymentInfo);
+        console.log({ result, updateResult });
+        res.send({ result, updateResult });
+        console.log({ result, updateResult });
+      }
+    );
 
     // post Worker Submission
-    app.post("/submission", async (req, res) => {
+    app.post("/submission", verifyToken, verifyWorker, async (req, res) => {
       const submissionInfo = req.body;
       const result = await submissionCollection.insertOne(submissionInfo);
       res.send(result);
     });
 
     // get worker Submission by id
-    app.get("/submissions/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { worker_email: email };
-      const result = await submissionCollection.find(query).toArray();
-      res.send(result);
-    });
+    app.get(
+      "/submissions/:email",
+      verifyToken,
+      verifyWorker,
+      async (req, res) => {
+        const email = req.params.email;
+        const query = { worker_email: email };
+        const result = await submissionCollection.find(query).toArray();
+        res.send(result);
+      }
+    );
 
     // get worker Submission by id
-    app.get("/submission/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { creator_email: email };
-      const result = await submissionCollection.find(query).toArray();
-      res.send(result);
-    });
+    app.get(
+      "/submission/:email",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const email = req.params.email;
+        const query = { creator_email: email };
+        const result = await submissionCollection.find(query).toArray();
+        res.send(result);
+      }
+    );
 
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
