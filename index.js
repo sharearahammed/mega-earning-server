@@ -5,8 +5,9 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
-// const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
 const corsOptions = {
@@ -19,7 +20,24 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+// For localstorage
+const verifyToken = (req, res, next) => {
+  console.log("inside verify token", req.headers.authorization);
+  if (!req.headers.authorization) {
+    return res.status(401).send({ message: "forbidden access" });
+  }
+  const token = req.headers.authorization.split(" ")[1];
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ message: "unauthorized access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+
+  // next();
+};
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.netgysa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -40,12 +58,40 @@ async function run() {
     const usersCollection = db.collection("users");
     const taskCollection = db.collection("tasks");
     const feedbackCollection = db.collection("feedback");
-    
+    const purchaseCoinCollection = db.collection("purchaseCoin");
+    const paymentCollection = db.collection("payment");
+    const submissionCollection = db.collection("workerSubmission");
+    const withdrawCollection = db.collection("withdraw");
+
+    // get all withdraw
+    app.get("/withdraws", async (req, res) => {
+      const result = await withdrawCollection.find().toArray();
+      res.send(result);
+    });
+
+    // post wihdraw data in db
+    app.post("/wihdraws", async (req, res) => {
+      const wihdrawInfo = req.body;
+      const result = await withdrawCollection.insertOne(wihdrawInfo);
+      res.send(result);
+    });
+
+    app.delete("/withdraw/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await withdrawCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // purchaseCoinCollection
+    app.get("/purchasecoin", async (req, res) => {
+      const result = await purchaseCoinCollection.find().toArray();
+      res.send(result);
+    });
 
     // auth related api
     app.post("/jwt", async (req, res) => {
       const user = req.body;
-      // console.log("user for token", user);
       const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
         expiresIn: "1h",
       });
@@ -55,10 +101,27 @@ async function run() {
     // Logout
     app.post("/logout", async (req, res) => {
       const user = req.body;
-      // console.log("logging out", user);
       res
         .clearCookie("token", { ...cookieOptions, maxAge: 0 })
         .send({ success: true });
+    });
+
+    // create-payment-intent
+    app.post("/create-payment-intent", verifyToken, async (req, res) => {
+      const price = req.body.price;
+      const priceInCent = parseFloat(price) * 100;
+      if (!price || priceInCent < 1) return;
+      // generate clientSecret
+      const { client_secret } = await stripe.paymentIntents.create({
+        amount: priceInCent,
+        currency: "usd",
+        // In the latest version of the API, specifying the `automatic_payment_methods` parameter is optional because Stripe enables its functionality by default.
+        automatic_payment_methods: {
+          enabled: true,
+        },
+      });
+      // send client secret as response
+      res.send({ clientSecret: client_secret });
     });
 
     // get user feedback
@@ -67,6 +130,11 @@ async function run() {
       res.send(result);
     });
 
+    // get all user
+    app.get("/users", async (req, res) => {
+      const result = await usersCollection.find().toArray();
+      res.send(result);
+    });
     // get a user
     app.get("/users/:email", async (req, res) => {
       const email = req.params.email;
@@ -74,6 +142,7 @@ async function run() {
       const result = await usersCollection.findOne(query);
       res.send(result);
     });
+
     // save a user data in db
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -106,22 +175,81 @@ async function run() {
       res.send(result);
     });
 
+    // patch the user role
+    app.patch("/users/role/:id", async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body; // Get the new role from the request body
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          role: role,
+        },
+      };
+      const result = await usersCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    //Decrease User Coin by patch
+    app.patch("/user/coin", async (req, res) => {
+      const withdrawInfo = req.body;
+      const useremail = withdrawInfo.worker_email;
+      const updatecoins = parseFloat(withdrawInfo.withdraw_coin);
+      const updateResult = await usersCollection.updateOne(
+        { email: useremail },
+        { $inc: { coins: -updatecoins } }
+      );
+      res.send(updateResult);
+    });
+
+    // delete user from db
+    app.delete("/delete/user/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await usersCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // get tasks in taskCollection
+    app.get("/tasks", async (req, res) => {
+      const result = await taskCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.get("/tasklist/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await taskCollection.findOne(query);
+      res.send(result);
+    });
+
+    // get tasks in taskCollection by email
+    app.get("/task/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { "taskCreator.email": email };
+      const result = await taskCollection.find(query).toArray();
+      res.send(result);
+    });
+
     // add tasks in taskCollection
     app.post("/addTask", async (req, res) => {
-
       try {
         const task = req.body;
-        const result = await taskCollection.insertOne(task);
 
         const email = task.taskCreator.email;
         const task_quantity = task.task_quantity;
         const payable_amount = task.payable_amount;
-        console.log({ email, task_quantity, payable_amount });
         const totalDeduction = task_quantity * payable_amount;
+
+        // Add totalDeduction to the task object
+        task.totalDeduction = totalDeduction;
+
+        const result = await taskCollection.insertOne(task);
 
         const updateResult = await usersCollection.updateOne(
           { email: email },
-          { $inc: { coins: -totalDeduction } }
+          {
+            $inc: { coins: -totalDeduction },
+          }
         );
         if (updateResult.matchedCount === 0) {
           return res.status(404).send({ error: "User not found" });
@@ -133,19 +261,162 @@ async function run() {
         res.status(500).send({ error: "An error occurred" });
       }
     });
-    // get tasks in taskCollection
-    app.get("/task/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { "taskCreator.email": email };
-      const result = await taskCollection.find(query).toArray();
+
+    // delete task by id
+    app.delete("/delete/task/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = taskCollection.deleteOne(query);
       res.send(result);
     });
 
-    // delete one task by id 
-    app.delete("/tasks/:id", async (req, res) => {
+    // update task data
+    app.patch("/tasks/:id", async (req, res) => {
+      const id = req.params.id;
+      const taskData = req.body;
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: {
+          task_title: taskData.task_title,
+          task_detail: taskData.task_detail,
+          submission_info: taskData.submission_info,
+        },
+      };
+      const result = await taskCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    // update submission data when approve
+    app.put("/submission/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const submissionData = req.body;
+
+        const userEmail = submissionData.worker_email;
+        const payable_amount = parseFloat(submissionData.payable_amount);
+
+        // Update the user's coins
+        const updateResult = await usersCollection.updateOne(
+          { email: userEmail },
+          { $inc: { coins: payable_amount } }
+        );
+
+        // Exclude _id from submissionData
+        const { _id, ...updateFields } = submissionData;
+
+        const updateDoc = {
+          $set: updateFields,
+        };
+
+        // Update the submission collection
+        const result = await submissionCollection.updateOne(query, updateDoc);
+
+        res.send({ result, updateResult });
+      } catch (error) {
+        console.error("Error updating submission:", error);
+        res.status(500).send({ error: "Failed to update submission" });
+      }
+    });
+
+    // update submission data when rejected
+    app.put("/submissions/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const submissionData = req.body;
+
+        // Exclude _id from submissionData
+        const { _id, ...updateFields } = submissionData;
+
+        const updateDoc = {
+          $set: updateFields,
+        };
+
+        // Update the submission collection
+        const result = await submissionCollection.updateOne(query, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating submission:", error);
+        res.status(500).send({ error: "Failed to update submission" });
+      }
+    });
+
+    // delete one task by id
+    app.delete("/tasks/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
-      const result = await taskCollection.deleteOne(query);
+
+      const task = await taskCollection.findOne(query);
+
+      const email = task.taskCreator.email;
+      const task_quantity = task.task_quantity;
+      const payable_amount = task.payable_amount;
+
+      // Delete the task from the taskCollection
+      const deleteResult = await taskCollection.deleteOne(query);
+
+      // Calculate the refund amount
+      const refundAmount = task_quantity * payable_amount;
+
+      // Update the user's coins
+      const updateResult = await usersCollection.updateOne(
+        { email: email },
+        { $inc: { coins: refundAmount } }
+      );
+
+      res.send({ deleteResult, updateResult });
+    });
+
+    // get all paymenthistory
+    app.get("/paymentdata", async (req, res) => {
+      const result = await paymentCollection.find().toArray();
+      res.send(result);
+    });
+
+    // get paymenthistory by email
+    app.get("/paymentdata/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { userEmail: email };
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // save payment info in payment collection
+    app.post("/paymentdata", async (req, res) => {
+      const paymentInfo = req.body;
+      const useremail = paymentInfo.userEmail;
+      const updatecoins = parseFloat(paymentInfo.cart.coins);
+      const updateResult = await usersCollection.updateOne(
+        { email: useremail },
+        { $inc: { coins: updatecoins } }
+      );
+
+      const result = await paymentCollection.insertOne(paymentInfo);
+      res.send({ result, updateResult });
+    });
+
+    // post Worker Submission
+    app.post("/submission", async (req, res) => {
+      const submissionInfo = req.body;
+      const result = await submissionCollection.insertOne(submissionInfo);
+      res.send(result);
+    });
+
+    // get worker Submission by id
+    app.get("/submissions/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { worker_email: email };
+      const result = await submissionCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // get worker Submission by id
+    app.get("/submission/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { creator_email: email };
+      const result = await submissionCollection.find(query).toArray();
       res.send(result);
     });
 
