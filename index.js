@@ -54,7 +54,7 @@ async function run() {
       const token = req.headers.authorization.split(" ")[1];
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-          return res.status(401).send({ message: "unauthorized access" });
+          return res.status(400).send({ message: "Invalid token" });
         }
         req.decoded = decoded;
         next();
@@ -182,6 +182,56 @@ async function run() {
       res.send(result);
     });
 
+    // TopEarner route
+    app.get('/topEarners', async (req, res) => {
+      try {
+        // Step 1: Find the top 6 workers based on coins
+        const topWorkers = await usersCollection.find(
+          { role: 'Worker' },
+          {
+            projection: {
+              coins: 1,
+              image: 1,
+              name: 1,
+              email: 1,
+            },
+          }
+        ).sort({ coins: -1 }).limit(6).toArray();
+    
+        if (!topWorkers.length) {
+          return res.status(404).send({ message: 'No workers found' });
+        }
+    
+        // Step 2: Count the number of completed tasks for each top worker
+        const workerEmails = topWorkers.map(worker => worker.email);
+        
+        const completedTasks = await submissionCollection.aggregate([
+          { $match: { worker_email: { $in: workerEmails }, status: 'approve' } },
+          { $group: { _id: "$worker_email", count: { $sum: 1 } } }
+        ]).toArray();
+    
+        // Step 3: Combine user data with task completion data
+        const completedTasksMap = completedTasks.reduce((total, task) => {
+          total[task._id] = task.count;
+          return total;
+        }, {});
+    
+        const result = topWorkers.map(worker => ({
+          picture: worker.image,
+          coins: worker.coins,
+          completedTasks: completedTasksMap[worker.email] || 0,
+        }));
+    
+        // Step 4: Send the combined result in the response
+        res.send(result);
+      } catch (error) {
+        console.error('Error fetching top earners:', error);
+        res.status(500).send({ message: 'Internal Server Error' });
+      }
+    });
+    
+
+
     // get all user
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
@@ -283,7 +333,7 @@ async function run() {
     app.get("/task/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       const query = { "taskCreator.email": email };
-      const result = await taskCollection.find(query).toArray();
+      const result = await taskCollection.find(query).sort({ timestamp: -1 }).toArray();
       res.send(result);
     });
 
@@ -300,7 +350,14 @@ async function run() {
         // Add totalDeduction to the task object
         task.totalDeduction = totalDeduction;
 
-        const result = await taskCollection.insertOne(task);
+        // save user for the first time
+      const options = { upsert: true };
+      const updateDoc = {
+          ...task,
+          timestamp: Date.now(),
+      };
+
+        const result = await taskCollection.insertOne(updateDoc,options);
 
         const updateResult = await usersCollection.updateOne(
           { email: email },
@@ -498,20 +555,32 @@ async function run() {
       res.send(result);
     });
 
-    // get worker Submission by id
+    // get worker Submission by email
     app.get(
-      "/submissions/:email",
+      "/submissions",
       verifyToken,
       verifyWorker,
       async (req, res) => {
-        const email = req.params.email;
-        const query = { worker_email: email };
-        const result = await submissionCollection.find(query).toArray();
+        const size = parseInt(req.query.size);
+        const page = parseInt(req.query.page) - 1;
+        const result = await submissionCollection.find().skip(page*size).limit(size).toArray();
         res.send(result);
       }
     );
 
-    // get worker Submission by id
+    // get worker Submission by email
+    app.get(
+      "/totalSubmissions",
+      verifyToken,
+      verifyWorker,
+      async (req, res) => {
+        const result = await submissionCollection.countDocuments();
+        res.send({result})
+      }
+    );
+    
+
+    // get worker Submission by email
     app.get(
       "/submission/:email",
       verifyToken,
