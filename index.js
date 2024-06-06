@@ -31,6 +31,39 @@ const client = new MongoClient(uri, {
   },
 });
 
+const sendEmail = (emailAddress, emailData) => {
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.TRANSPORTER_EMAIL,
+      pass: process.env.TRANSPORTER_PASSWORD,
+    },
+  });
+
+  transporter.verify(function (error, success) {
+    if (error) {
+      console.log(error);
+    } else {
+      console.log('Server is ready to take our messages');
+    }
+  });
+
+  const mailBody = {
+    from: `"MegaEarning" <${process.env.TRANSPORTER_EMAIL}>`,
+    to: emailAddress,
+    subject: emailData.subject,
+    html: emailData.message,
+  };
+
+  transporter.sendMail(mailBody, (error, info) => {
+    if (error) {
+      console.log(error);
+    } else {
+      console.log('Email Sent: ' + info.response);
+    }
+  });
+};
+
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -62,6 +95,8 @@ async function run() {
 
       // next();
     };
+
+    // Verify middleware
 
     // use verify admin after verifyToken
     const verifyAdmin = async (req, res, next) => {
@@ -411,8 +446,7 @@ async function run() {
     );
 
     // update submission data when approve
-    app.put(
-      "/submission/:id",
+    app.put("/submission/:id",
       verifyToken,
       verifyTaskCreator,
       async (req, res) => {
@@ -439,6 +473,13 @@ async function run() {
 
           // Update the submission collection
           const result = await submissionCollection.updateOne(query, updateDoc);
+
+          // send email to Worker
+          sendEmail(submissionData?.worker_email,{
+            subject: 'Task Submission Status',
+            message: 'Your task submission is approved and Coin Updateded Successful!'
+          })
+          console.log("submissionData.worker_email :",submissionData.worker_email)
 
           res.send({ result, updateResult });
         } catch (error) {
@@ -468,6 +509,12 @@ async function run() {
 
           // Update the submission collection
           const result = await submissionCollection.updateOne(query, updateDoc);
+
+          // send email to Worker
+          sendEmail(submissionData.worker_email,{
+            subject: 'Task Submission Status',
+            message: 'Your task submission is rejected'
+          })
 
           res.send(result);
         } catch (error) {
@@ -562,7 +609,7 @@ async function run() {
       verifyWorker,
       async (req, res) => {
         const size = parseInt(req.query.size);
-        const page = parseInt(req.query.page) - 1;
+        const page = parseInt(req.query.page) -1;
         const result = await submissionCollection.find().skip(page*size).limit(size).toArray();
         res.send(result);
       }
