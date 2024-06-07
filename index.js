@@ -11,7 +11,11 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:5174","https://mega-earning.netlify.app"],
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://mega-earning.netlify.app",
+  ],
   credentials: true,
   optionSuccessStatus: 200,
 };
@@ -31,38 +35,7 @@ const client = new MongoClient(uri, {
   },
 });
 
-const sendEmail = (emailAddress, emailData) => {
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.TRANSPORTER_EMAIL,
-      pass: process.env.TRANSPORTER_PASSWORD,
-    },
-  });
 
-  transporter.verify(function (error, success) {
-    if (error) {
-      console.log(error);
-    } else {
-      console.log('Server is ready to take our messages');
-    }
-  });
-
-  const mailBody = {
-    from: `"MegaEarning" <${process.env.TRANSPORTER_EMAIL}>`,
-    to: emailAddress,
-    subject: emailData.subject,
-    html: emailData.message,
-  };
-
-  transporter.sendMail(mailBody, (error, info) => {
-    if (error) {
-      console.log(error);
-    } else {
-      console.log('Email Sent: ' + info.response);
-    }
-  });
-};
 
 async function run() {
   try {
@@ -77,6 +50,8 @@ async function run() {
     const paymentCollection = db.collection("payment");
     const submissionCollection = db.collection("workerSubmission");
     const withdrawCollection = db.collection("withdraw");
+    const notificationCollection = db.collection("notifiation");
+
 
     // For localstorage
     const verifyToken = (req, res, next) => {
@@ -131,6 +106,31 @@ async function run() {
       }
       next();
     };
+
+    // get notification bt using user email
+    app.get('/notifications', verifyToken, async (req, res) => {
+      const toEmail = req.query.toEmail;
+      try {
+        const notifications = await notificationCollection.find({ toEmail }).sort({ time: -1 }).toArray();
+        res.send(notifications);
+      } catch (error) {
+        console.error("Error fetching notifications:", error);
+        res.status(500).send({ error: "Failed to fetch notifications" });
+      }
+    });
+
+        // post notification
+        app.post('/notifications', verifyToken,verifyTaskCreator, async (req, res) => {
+          const notification = req.body;
+          try {
+            const result = await notificationCollection.insertOne(notification);
+            res.send(result);
+          } catch (error) {
+            console.error("Error creating notification:", error);
+            res.status(500).send({ error: "Failed to create notification" });
+          }
+        });
+
 
     // get all withdraw
     app.get("/withdraws", verifyToken, verifyAdmin, async (req, res) => {
@@ -217,55 +217,76 @@ async function run() {
       res.send(result);
     });
 
+    // show coins only the nav bar
+    app.get('/coins/:email',async(req,res)=>{
+      const email = req.params.email;
+      const query = {email:email}
+      const coins = await usersCollection.findOne(query,{
+        projection:{
+          coins:1
+        }
+      })
+      res.send(coins)
+    })
+
     // TopEarner route
-    app.get('/topEarners', async (req, res) => {
+    app.get("/topEarners", async (req, res) => {
       try {
         // Step 1: Find the top 6 workers based on coins
-        const topWorkers = await usersCollection.find(
-          { role: 'Worker' },
-          {
-            projection: {
-              coins: 1,
-              image: 1,
-              name: 1,
-              email: 1,
-            },
-          }
-        ).sort({ coins: -1 }).limit(6).toArray();
-    
+        const topWorkers = await usersCollection
+          .find(
+            { role: "Worker" },
+            {
+              projection: {
+                coins: 1,
+                image: 1,
+                name: 1,
+                email: 1,
+              },
+            }
+          )
+          .sort({ coins: -1 })
+          .limit(6)
+          .toArray();
+
         if (!topWorkers.length) {
-          return res.status(404).send({ message: 'No workers found' });
+          return res.status(404).send({ message: "No workers found" });
         }
-    
+
         // Step 2: Count the number of completed tasks for each top worker
-        const workerEmails = topWorkers.map(worker => worker.email);
-        
-        const completedTasks = await submissionCollection.aggregate([
-          { $match: { worker_email: { $in: workerEmails }, status: 'approve' } },
-          { $group: { _id: "$worker_email", count: { $sum: 1 } } }
-        ]).toArray();
-    
+        const workerEmails = topWorkers.map((worker) => worker.email);
+
+        const completedTasks = await submissionCollection
+          .aggregate([
+            {
+              $match: {
+                worker_email: { $in: workerEmails },
+                status: "approve",
+              },
+            },
+            { $group: { _id: "$worker_email", count: { $sum: 1 } } },
+          ])
+          .toArray();
+
         // Step 3: Combine user data with task completion data
         const completedTasksMap = completedTasks.reduce((total, task) => {
           total[task._id] = task.count;
           return total;
         }, {});
-    
-        const result = topWorkers.map(worker => ({
+
+        const result = topWorkers.map((worker) => ({
           picture: worker.image,
           coins: worker.coins,
           completedTasks: completedTasksMap[worker.email] || 0,
         }));
-    
+
         // Step 4: Send the combined result in the response
         res.send(result);
       } catch (error) {
-        console.error('Error fetching top earners:', error);
-        res.status(500).send({ message: 'Internal Server Error' });
+        console.error("Error fetching top earners:", error);
+        res.status(500).send({ message: "Internal Server Error" });
       }
     });
-    
-
 
     // get all user
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
@@ -368,7 +389,10 @@ async function run() {
     app.get("/task/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       const query = { "taskCreator.email": email };
-      const result = await taskCollection.find(query).sort({ timestamp: -1 }).toArray();
+      const result = await taskCollection
+        .find(query)
+        .sort({ timestamp: -1 })
+        .toArray();
       res.send(result);
     });
 
@@ -386,13 +410,13 @@ async function run() {
         task.totalDeduction = totalDeduction;
 
         // save user for the first time
-      const options = { upsert: true };
-      const updateDoc = {
+        const options = { upsert: true };
+        const updateDoc = {
           ...task,
           timestamp: Date.now(),
-      };
+        };
 
-        const result = await taskCollection.insertOne(updateDoc,options);
+        const result = await taskCollection.insertOne(updateDoc, options);
 
         const updateResult = await usersCollection.updateOne(
           { email: email },
@@ -446,7 +470,8 @@ async function run() {
     );
 
     // update submission data when approve
-    app.put("/submission/:id",
+    app.put(
+      "/submission/:id",
       verifyToken,
       verifyTaskCreator,
       async (req, res) => {
@@ -474,12 +499,10 @@ async function run() {
           // Update the submission collection
           const result = await submissionCollection.updateOne(query, updateDoc);
 
-          // send email to Worker
-          sendEmail(submissionData?.worker_email,{
-            subject: 'Task Submission Status',
-            message: 'Your task submission is approved and Coin Updateded Successful!'
-          })
-          console.log("submissionData.worker_email :",submissionData.worker_email)
+          console.log(
+            "submissionData.worker_email :",
+            submissionData.worker_email
+          );
 
           res.send({ result, updateResult });
         } catch (error) {
@@ -488,6 +511,7 @@ async function run() {
         }
       }
     );
+
 
     // update submission data when rejected
     app.put(
@@ -509,12 +533,6 @@ async function run() {
 
           // Update the submission collection
           const result = await submissionCollection.updateOne(query, updateDoc);
-
-          // send email to Worker
-          sendEmail(submissionData.worker_email,{
-            subject: 'Task Submission Status',
-            message: 'Your task submission is rejected'
-          })
 
           res.send(result);
         } catch (error) {
@@ -603,29 +621,44 @@ async function run() {
     });
 
     // get worker Submission by email
-    app.get(
-      "/submissions",
-      verifyToken,
-      verifyWorker,
-      async (req, res) => {
-        const size = parseInt(req.query.size);
-        const page = parseInt(req.query.page) -1;
-        const result = await submissionCollection.find().skip(page*size).limit(size).toArray();
-        res.send(result);
-      }
-    );
+    app.get("/submissions", verifyToken, verifyWorker, async (req, res) => {
+      const size = parseInt(req.query.size);
+      const page = parseInt(req.query.page) - 1;
+      const email = req.query.email;
+      const query = { worker_email: email }
+      const result = await submissionCollection
+        .find(query)
+        .skip(page * size)
+        .limit(size)
+        .sort({ current_date: -1 })
+        .toArray();
+      res.send(result);
+    });
 
     // get worker Submission by email
     app.get(
-      "/totalSubmissions",
+      "/totalSubmissions/:email",
       verifyToken,
       verifyWorker,
       async (req, res) => {
-        const result = await submissionCollection.countDocuments();
-        res.send({result})
+        const email = req.params.email;
+        const query = { worker_email: email };
+        const result = await submissionCollection.find(query).toArray();
+        res.send({ result });
       }
     );
-    
+
+    app.get(
+      "/submissions/:email",
+      verifyToken,
+      verifyWorker,
+      async (req, res) => {
+        const email = req.params.email;
+        const query = { worker_email: email };
+        const result = await submissionCollection.find(query).toArray();
+        res.send(result);
+      }
+    );
 
     // get worker Submission by email
     app.get(
