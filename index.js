@@ -2,11 +2,11 @@ const express = require("express");
 const app = express();
 require("dotenv").config();
 const cors = require("cors");
-const nodemailer = require("nodemailer");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
+const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
@@ -35,8 +35,6 @@ const client = new MongoClient(uri, {
   },
 });
 
-
-
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -51,7 +49,6 @@ async function run() {
     const submissionCollection = db.collection("workerSubmission");
     const withdrawCollection = db.collection("withdraw");
     const notificationCollection = db.collection("notifiation");
-
 
     // For localstorage
     const verifyToken = (req, res, next) => {
@@ -69,6 +66,44 @@ async function run() {
       });
 
       // next();
+    };
+
+    // send email
+    const sendEmail = (emailAddress, emailData) => {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        // host: 'smtp.gmail.com',
+        secure: true, // Use `true` for port 465, `false` for all other ports
+        port: 465,
+        auth: {
+          user: process.env.TRANSPORTER_EMAIL,
+          pass: process.env.TRANSPORTER_PASS,
+        },
+      });
+
+      // verify transporter
+      // verify connection configuration
+      transporter.verify(function (error, success) {
+        if (error) {
+          console.log(error);
+        } else {
+          console.log("Server is ready to take our messages");
+        }
+      });
+      const mailBody = {
+        from: `"MegaEarning" <${process.env.TRANSPORTER_EMAIL}>`, // sender address
+        to: emailAddress, // list of receivers
+        subject: emailData.subject, // Subject line
+        html: emailData.message, // html body
+      };
+
+      transporter.sendMail(mailBody, (error, info) => {
+        if (error) {
+          console.log(error);
+        } else {
+          console.log("Email Sent: " + info.response);
+        }
+      });
     };
 
     // Verify middleware
@@ -108,10 +143,13 @@ async function run() {
     };
 
     // get notification bt using user email
-    app.get('/notifications', verifyToken, async (req, res) => {
+    app.get("/notifications", verifyToken, async (req, res) => {
       const toEmail = req.query.toEmail;
       try {
-        const notifications = await notificationCollection.find({ toEmail }).sort({ time: -1 }).toArray();
+        const notifications = await notificationCollection
+          .find({ toEmail })
+          .sort({ time: -1 })
+          .toArray();
         res.send(notifications);
       } catch (error) {
         console.error("Error fetching notifications:", error);
@@ -119,18 +157,22 @@ async function run() {
       }
     });
 
-        // post notification
-        app.post('/notifications', verifyToken,verifyTaskCreator, async (req, res) => {
-          const notification = req.body;
-          try {
-            const result = await notificationCollection.insertOne(notification);
-            res.send(result);
-          } catch (error) {
-            console.error("Error creating notification:", error);
-            res.status(500).send({ error: "Failed to create notification" });
-          }
-        });
-
+    // post notification
+    app.post(
+      "/notifications",
+      verifyToken,
+      verifyTaskCreator,
+      async (req, res) => {
+        const notification = req.body;
+        try {
+          const result = await notificationCollection.insertOne(notification);
+          res.send(result);
+        } catch (error) {
+          console.error("Error creating notification:", error);
+          res.status(500).send({ error: "Failed to create notification" });
+        }
+      }
+    );
 
     // get all withdraw
     app.get("/withdraws", verifyToken, verifyAdmin, async (req, res) => {
@@ -218,16 +260,16 @@ async function run() {
     });
 
     // show coins only the nav bar
-    app.get('/coins/:email',async(req,res)=>{
+    app.get("/coins/:email", async (req, res) => {
       const email = req.params.email;
-      const query = {email:email}
-      const coins = await usersCollection.findOne(query,{
-        projection:{
-          coins:1
-        }
-      })
-      res.send(coins)
-    })
+      const query = { email: email };
+      const coins = await usersCollection.findOne(query, {
+        projection: {
+          coins: 1,
+        },
+      });
+      res.send(coins);
+    });
 
     // TopEarner route
     app.get("/topEarners", async (req, res) => {
@@ -329,7 +371,12 @@ async function run() {
           timestamp: Date.now(),
         },
       };
+
       const result = await usersCollection.updateOne(query, updateDoc, options);
+      sendEmail(user.email, {
+        subject: "Welcome to MegaEarning!",
+        message: `Signup successful`,
+      });
       res.send(result);
     });
 
@@ -373,8 +420,20 @@ async function run() {
     );
 
     // get tasks in taskCollection
-    app.get("/tasks", verifyToken, async (req, res) => {
+    app.get("/taskss", verifyToken, async (req, res) => {
       const result = await taskCollection.find().toArray();
+      res.send({ result });
+    });
+    // get tasks in taskCollection || using Pagination 
+    app.get("/tasks", verifyToken, verifyWorker, async (req, res) => {
+      const size = parseInt(req.query.size);
+      const page = parseInt(req.query.page) - 1;
+      const result = await taskCollection
+        .find()
+        .skip(page * size)
+        .limit(size)
+        .sort({ current_date: -1 })
+        .toArray();
       res.send(result);
     });
 
@@ -427,6 +486,20 @@ async function run() {
         if (updateResult.matchedCount === 0) {
           return res.status(404).send({ error: "User not found" });
         }
+        mg.messages
+          .create(process.env.MAIL_SENDING_DOMAIN, {
+            from: `Excited User <postmaster@sandbox3f2e868b2a384c97badd499dba2b6aca.mailgun.org>`,
+            to: ["sharearahammed@gmail.com"],
+            subject: "Hello",
+            text: "Testing some Mailgun awesomness!",
+            html: `
+          <div>
+          <h2>Thank you for your adding task</h2>
+          </div>
+          `,
+          })
+          .then((msg) => console.log(msg)) // logs response data
+          .catch((err) => console.error(err)); // logs any error
 
         res.send({ result, updateResult });
       } catch (err) {
@@ -503,6 +576,10 @@ async function run() {
             "submissionData.worker_email :",
             submissionData.worker_email
           );
+          sendEmail(submissionData.worker_email, {
+            subject: "Approve Task!",
+            message: `Your ${submissionData.task_title} task submission approved by ${submissionData.creator_name}`,
+          });
 
           res.send({ result, updateResult });
         } catch (error) {
@@ -511,7 +588,6 @@ async function run() {
         }
       }
     );
-
 
     // update submission data when rejected
     app.put(
@@ -534,6 +610,10 @@ async function run() {
           // Update the submission collection
           const result = await submissionCollection.updateOne(query, updateDoc);
 
+          sendEmail(submissionData.worker_email, {
+            subject: "Reject Task!",
+            message: `Your ${submissionData.task_title} task submission rejected by ${submissionData.creator_name}`,
+          });
           res.send(result);
         } catch (error) {
           console.error("Error updating submission:", error);
@@ -625,7 +705,7 @@ async function run() {
       const size = parseInt(req.query.size);
       const page = parseInt(req.query.page) - 1;
       const email = req.query.email;
-      const query = { worker_email: email }
+      const query = { worker_email: email };
       const result = await submissionCollection
         .find(query)
         .skip(page * size)
